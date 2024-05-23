@@ -37,6 +37,8 @@ jobs:
           python-version: ${{ github.event.inputs.python_v || '3.9' }}
           cache: "pip"
       - name: Install Dependencies
-        run: pip install -r requirements-dev.txt
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
       - name: Run test
         run: python -m pytest
