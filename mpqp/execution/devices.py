@@ -319,3 +319,18 @@ class GOOGLEDevice(AvailableDevice):
             True if the device is a processor, False otherwise.
         """
         return self.name.startswith("PROCESSOR")
+    
+class QUANDELADevice(AvailableDevice):
+    """Enum regrouping all available devices provided by CIRQ."""
+
+    PERCEVAL_LOCAL_SIMULATOR = "LocalSimulator"
+
+    def is_remote(self):
+        return False
+
+    def is_gate_based(self) -> bool:
+        return False
+
+    def is_simulator(self) -> bool:
+        return "SIMULATOR" in self.name
+    

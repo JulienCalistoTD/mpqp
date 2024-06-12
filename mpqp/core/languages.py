@@ -22,3 +22,4 @@ class Language(Enum):
     MY_QLM = 1
     BRAKET = 2
     CIRQ = 3
+    PERCEVAL = 4
