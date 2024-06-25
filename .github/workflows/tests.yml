@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       python_v:
-        description: 'Python version'
+        description: 'python version'
         required: true
         default: '3.9'
         type: choice
@@ -17,41 +17,41 @@ on:
           - '3.10'
           - '3.11'
       commit_ref:
-        description: Specific ref (branch, tag, or SHA)
+        description: Specific ref (branch, tag or SHA)
         default: ''
         type: string
         required: false
       long:
         description: 'Run long tests'
         required: false
-        default: 'false'
+        default: false
         type: boolean
+
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [${{ github.event.inputs.python_v }}]
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.commit_ref || github.ref }}
-      - name: Set up Python
+      - name: Set up Python ${{ github.event.inputs.python_v || '3.9' }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: 'pip'
+          python-version: ${{ github.event.inputs.python_v || '3.9' }}
+          cache: "pip"
       - name: Install Dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements-dev.txt
+          pip install .
       - name: Install pdflatex
         if: ${{ github.event.inputs.long == 'true' || github.ref_name == 'main' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y texlive-latex-base
+          pip install pillow
+          sudo apt install poppler-utils
       - name: Run Tests
         run: |
           if [ "${{ github.event.inputs.long }}" == "true" ] || [ "${{ github.ref_name }}" == "main" ]; then
