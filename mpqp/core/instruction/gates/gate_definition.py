@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from abc import abstractmethod, ABC
+from abc import ABC, abstractmethod
+from numbers import Complex
+from typing import TYPE_CHECKING
 from warnings import warn
 
-import numpy as np
-from sympy import Expr
-from typeguard import typechecked
-from numbers import Complex
+if TYPE_CHECKING:
+    from sympy import Expr
 
-from mpqp.tools.maths import is_unitary, matrix_eq
+import numpy as np
+from typeguard import typechecked
+
 from mpqp.tools.generics import Matrix, one_lined_repr
+from mpqp.tools.maths import is_unitary, matrix_eq
 
 
 @typechecked
@@ -26,16 +29,16 @@ class GateDefinition(ABC):
     Example:
         >>> gate_matrix = np.array([[0, 0, 0, 1], [0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0]])
         >>> gate_definition = UnitaryMatrix(gate_matrix)
-        >>> custom_gate = CustomGate(gate_definition)
+        >>> custom_gate = CustomGate(gate_definition, [0])
+
     """
 
-    """ TODO: put this back once we implement the other definitions
-    This class permit to define a gate in 4 potential ways:
-        1. the unitary matrix defining the gate
-        2. a combination of several other gates
-        3. a combination of Kraus operators
-        4. the decomposition of the gate in the Pauli basis (only possible for LU gates)
-    """
+    # TODO: put this back once we implement the other definitions
+    # This class permit to define a gate in 4 potential ways:
+    #     1. the unitary matrix defining the gate
+    #     2. a combination of several other gates
+    #     3. a combination of Kraus operators
+    #     4. the decomposition of the gate in the Pauli basis (only possible for LU gates)
 
     @abstractmethod
     def to_matrix(self) -> Matrix:
@@ -50,16 +53,6 @@ class GateDefinition(ABC):
     ) -> GateDefinition:
         pass
 
-    # @abstractmethod
-    def to_kraus_representation(self) -> KrausRepresentation:
-        """6M-TODO"""
-        raise NotImplementedError()
-
-    # @abstractmethod
-    def to_pauli_decomposition(self) -> PauliDecomposition:
-        """6M-TODO"""
-        raise NotImplementedError()
-
     def is_equivalent(self, other: GateDefinition) -> bool:
         """Determines if this definition is equivalent to the other.
 
@@ -71,6 +64,7 @@ class GateDefinition(ABC):
             >>> d2 = UnitaryMatrix(np.array([[2, 0], [0, -2.0]]) / 2)
             >>> d1.is_equivalent(d2)
             True
+
         """
         return matrix_eq(self.to_matrix(), other.to_matrix())
 
@@ -82,8 +76,8 @@ class GateDefinition(ABC):
 
         Example:
             >>> UnitaryMatrix(np.array([[1, 0], [0, -1]])).inverse()
-            array([[ 1.,  0.],
-                   [-0., -1.]])
+            UnitaryMatrix(array([[ 1., 0.], [-0., -1.]]))
+
         """
         mat = self.to_matrix()
 
@@ -92,20 +86,6 @@ class GateDefinition(ABC):
         ):
             raise ValueError("Cannot invert arbitrary gates using symbolic variables")
         return UnitaryMatrix(np.linalg.inv(mat))  # type:ignore
-
-
-class KrausRepresentation(GateDefinition):
-    """# 6M-TODO : implement and comment"""
-
-    def __init__(self):
-        self.pp = 1
-
-
-class PauliDecomposition(GateDefinition):
-    """# 6M-TODO : implement and comment"""
-
-    def __init__(self):
-        self.pp = 1
 
 
 @typechecked
@@ -119,6 +99,8 @@ class UnitaryMatrix(GateDefinition):
     """
 
     def __init__(self, definition: Matrix, disable_symbol_warn: bool = False):
+        from sympy import Expr
+
         if any(isinstance(elt, Expr) for _, elt in np.ndenumerate(definition)):
             if not disable_symbol_warn:
                 # 3M-TODO: can we improve this situation ?
@@ -133,14 +115,6 @@ class UnitaryMatrix(GateDefinition):
 
     def to_matrix(self) -> Matrix:
         return self.matrix
-
-    def to_kraus_representation(self) -> KrausRepresentation:
-        """6M-TODO to implement"""
-        ...
-
-    def to_pauli_decomposition(self) -> PauliDecomposition:
-        """6M-TODO to implement"""
-        ...
 
     def subs(
         self,
@@ -165,6 +139,7 @@ class UnitaryMatrix(GateDefinition):
                 argument disables this check because in some contexts, it is
                 undesired. Defaults to False.
         """
+        from sympy import Expr
 
         def mapping(val: Expr | Complex) -> Expr | Complex:
             def caster(v: Expr | Complex) -> Expr | Complex:

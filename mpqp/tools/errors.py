@@ -1,3 +1,8 @@
+"""You will find here the custom exceptions we created in order to provide 
+clearer errors. When relevant, we also append the trace of the error raised by a
+provider's SDK."""
+
+
 class InstructionParsingError(ValueError):
     """Raised when an QASM instruction encountered by the parser is malformed."""
 
@@ -44,3 +49,7 @@ class UnsupportedBraketFeaturesWarning(UserWarning):
 
 class OpenQASMTranslationWarning(UserWarning):
     """Warning for potential translation error when exporting to OpenQASM."""
+
+
+class AdditionalGateNoiseWarning(UserWarning):
+    """Warning for additional noise on native gate used in the decomposition of noisy gate."""

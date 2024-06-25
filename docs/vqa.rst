@@ -1,7 +1,10 @@
+.. _VQA:
+
 Variational Quantum Algorithms
 ==============================
 
 .. code-block:: python
+    :class: import
 
     from mpqp.execution.vqa import *
 
@@ -26,7 +29,7 @@ Once you define a circuit with variables, you have two options:
 
 1. either the measure of the circuit is an 
    :class:`ExpectationMeasure<mpqp.core.instruction.measurement.expectation_value.ExpectationMeasure>`
-   can directly feed it in the optimizer;
+   and can directly feed it in the optimizer;
 2. or you can define a custom cost function for more complicated cases.
 
 Detailed example for those two options can be found in our example notebooks.

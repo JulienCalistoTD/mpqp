@@ -1,38 +1,96 @@
+from __future__ import annotations
+
+import warnings
+from itertools import permutations
 from statistics import mean
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
-from qat.clinalg.qpu import CLinalg
-from qat.comm.qlmaas.ttypes import JobStatus as QLM_JobStatus
-from qat.comm.qlmaas.ttypes import QLMServiceException
-from qat.core.contexts import QPUContext
-from qat.core.qpu.qpu import QPUHandler
-from qat.core.wrappers.circuit import Circuit
-from qat.core.wrappers.job import Job as JobQLM
-from qat.core.wrappers.observable import Observable as QLM_Observable
-from qat.core.wrappers.result import Result as QLM_Result
-from qat.plugins.observable_splitter import ObservableSplitter
-from qat.pylinalg import PyLinalg
-from qat.qlmaas.result import AsyncResult
 from typeguard import typechecked
 
-from mpqp import Language, QCircuit
-from mpqp.core.instruction.measurement import ComputationalBasis
-from mpqp.core.instruction.measurement.basis_measure import BasisMeasure
-from mpqp.core.instruction.measurement.expectation_value import (
+from mpqp import Language
+from mpqp.core.circuit import QCircuit
+from mpqp.core.instruction.measurement import (
+    BasisMeasure,
+    ComputationalBasis,
     ExpectationMeasure,
     Observable,
 )
-from mpqp.execution.devices import ATOSDevice
+from mpqp.gates import CNOT, CRk, Rk
+from mpqp.noise.noise_model import Depolarizing, NoiseModel
 
-from ...tools.errors import QLMRemoteExecutionError
+from ...tools.errors import (
+    AdditionalGateNoiseWarning,
+    DeviceJobIncompatibleError,
+    QLMRemoteExecutionError,
+)
 from ..connection.qlm_connection import get_QLMaaSConnection
+from ..devices import ATOSDevice
 from ..job import Job, JobStatus, JobType
 from ..result import Result, Sample, StateVector
 
+if TYPE_CHECKING:
+    from qat.core.qpu.qpu import QPUHandler
+    from qat.core.wrappers.circuit import Circuit
+    from qat.core.wrappers.job import Job as JobQLM
+    from qat.core.wrappers.result import Result as QLM_Result
+    from qat.hardware.default import HardwareModel
+    from qat.qlmaas.result import AsyncResult
+
 
 @typechecked
-def get_local_qpu(device: ATOSDevice) -> QPUHandler:
+def job_pre_processing(job: Job) -> "Circuit":
+    """Extracts the myQLM circuit and check if ``job.type`` and ``job.measure``
+    are coherent.
+
+    Args:
+        job: Mpqp job used to instantiate the myQLM circuit.
+
+    Returns:
+          The myQLM Circuit translated from the circuit of the job in parameter.
+    """
+
+    if (
+        job.job_type == JobType.STATE_VECTOR
+        and job.measure is not None
+        and not isinstance(job.measure, BasisMeasure)
+    ):
+        raise ValueError(
+            "`STATE_VECTOR` jobs require a measure of type `BasisMeasure` to be"
+            f" run, but got {job.measure}."
+        )
+    if job.job_type == JobType.OBSERVABLE and not isinstance(
+        job.measure, ExpectationMeasure
+    ):
+        raise ValueError("`OBSERVABLE` jobs require `ExpectationMeasure` to be run.")
+    if job.job_type == JobType.STATE_VECTOR and job.device.is_noisy_simulator():
+        raise DeviceJobIncompatibleError(
+            "QLM Noisy simulators cannot be used for `STATE_VECTOR` jobs."
+        )
+
+    if job.job_type == JobType.SAMPLE:
+        if job.measure is None:
+            raise ValueError("An `SAMPLE` job should be defined with a measure.")
+
+    if job.job_type == JobType.OBSERVABLE:
+        if job.measure is None:
+            raise ValueError("An `OBSERVABLE` job should be defined with a measure.")
+        if job.device == ATOSDevice.QLM_NOISYQPROC and job.measure.shots == 0:
+            raise DeviceJobIncompatibleError(
+                "NoisyQProc does not support properly ideal `OBSERVABLE` jobs."
+            )
+        if job.device == ATOSDevice.QLM_MPO and job.measure.shots != 0:
+            raise DeviceJobIncompatibleError(
+                "`OBSERVABLE` jobs with shots!=0 are disabled for MPO."
+            )
+
+    myqlm_circuit = job.circuit.to_other_language(Language.MY_QLM)
+
+    return myqlm_circuit
+
+
+@typechecked
+def get_local_qpu(device: ATOSDevice) -> "QPUHandler":
     """Returns the myQLM local QPU associated with the ATOSDevice given in
     parameter.
 
@@ -40,53 +98,128 @@ def get_local_qpu(device: ATOSDevice) -> QPUHandler:
         device: ATOSDevice referring to the myQLM local QPU.
 
     Raises:
-        ValueError: If the required backend is a local simulator.
+        ValueError: If the required backend is a remote simulator.
     """
+    from qat.clinalg.qpu import CLinalg
+    from qat.pylinalg import PyLinalg
+
     if device.is_remote():
-        raise ValueError("Excepted a local device, not the remote QLM")
+        raise ValueError(f"Excepted a local device, not the remote QLM device {device}")
     if device == ATOSDevice.MYQLM_PYLINALG:
         return PyLinalg()
     return CLinalg()
 
 
 @typechecked
-def generate_state_vector_job(
-    myqlm_circuit: Circuit, device: ATOSDevice = ATOSDevice.MYQLM_PYLINALG
-) -> tuple[JobQLM, QPUContext]:
-    """Generates a myQLM job from the myQLM circuit and selects the right myQLM
-    QPU to run on it.
+def get_remote_qpu(device: ATOSDevice, job: Job):
+    """Returns the QLM remote QPU associated with the ATOSDevice given in parameter.
 
     Args:
-        myqlm_circuit: MyQLM circuit of the job.
-        device: ATOSDevice on which the user wants to run the job (to know if
-            the run in local of remote).
+        device: ATOSDevice referring to the QLM remote QPU.
+        job: MPQP job containing all info about the execution.
 
-    Returns:
-        A myQLM Job and the right myQLM QPUHandler on which it will be submitted.
+    Raises:
+        ValueError: If the required backend is a local simulator.
     """
+    if not device.is_remote():
+        raise ValueError(
+            f"Excepted a remote device, but got a local myQLM simulator {device}"
+        )
 
-    if device.is_remote():
-        get_QLMaaSConnection()
-        from qlmaas.qpus import LinAlg  # type: ignore
+    if len(job.circuit.noises) > 0:
+        if not device.is_noisy_simulator():
+            raise DeviceJobIncompatibleError(
+                f"Excepted a noisy remote simulator but got {device}"
+            )
 
-        qpu = LinAlg()
+        if device == ATOSDevice.QLM_NOISYQPROC:
+            get_QLMaaSConnection()
+            from qlmaas.qpus import NoisyQProc  # type: ignore
+
+            hw_model = generate_hardware_model(
+                job.circuit.noises, job.circuit.nb_qubits
+            )
+            qpu = NoisyQProc(
+                hw_model,
+                sim_method="stochastic",
+                n_samples=job.measure.shots if job.measure is not None else 0,
+            )
+            if job.job_type == JobType.OBSERVABLE:
+                from qlmaas.plugins import ObservableSplitter  # type: ignore
+
+                qpu = ObservableSplitter() | qpu
+            return qpu
+        elif device == ATOSDevice.QLM_MPO:
+            get_QLMaaSConnection()
+            from qlmaas.qpus import MPO  # type: ignore
+
+            hw_model = generate_hardware_model(
+                job.circuit.noises, job.circuit.nb_qubits
+            )
+            return MPO(hw_model)
+        else:
+            raise DeviceJobIncompatibleError(
+                f"Device {device.name} not handled for noisy simulations. "
+            )
     else:
-        qpu = get_local_qpu(device)
+        if device == ATOSDevice.QLM_LINALG:
+            get_QLMaaSConnection()
+            from qlmaas.qpus import LinAlg  # type: ignore
 
-    return myqlm_circuit.to_job(job_type="SAMPLE"), qpu
+            return LinAlg()
+        elif device == ATOSDevice.QLM_MPS:
+            get_QLMaaSConnection()
+            from qlmaas.qpus import MPS  # type: ignore
+
+            return MPS()
+        elif device == ATOSDevice.QLM_NOISYQPROC:
+            get_QLMaaSConnection()
+            from qlmaas.qpus import NoisyQProc  # type: ignore
+
+            qpu = NoisyQProc(
+                sim_method="stochastic",
+                n_samples=job.measure.shots if job.measure is not None else 0,
+            )
+            if job.job_type == JobType.OBSERVABLE:
+                from qlmaas.plugins import ObservableSplitter  # type: ignore
+
+                qpu = ObservableSplitter() | qpu
+            return qpu
+        elif device == ATOSDevice.QLM_MPO:
+            get_QLMaaSConnection()
+            from qlmaas.qpus import MPO  # type: ignore
+
+            return MPO()
+        else:
+            raise DeviceJobIncompatibleError(
+                f"Device {device.name} not handled for noiseless simulations."
+            )
 
 
 @typechecked
-def generate_sample_job(myqlm_circuit: Circuit, job: Job) -> tuple[JobQLM, QPUContext]:
-    """Generates a myQLM job from the myQLM circuit and job sample info (target,
-    shots, ...), and selects the right myQLM QPU to run on it.
+def generate_state_vector_job(myqlm_circuit: "Circuit") -> "JobQLM":
+    """Generates a myQLM job from the myQLM circuit.
+
+    Args:
+        myqlm_circuit: MyQLM circuit of the job.
+
+    Returns:
+        A myQLM Job to retrieve the statevector of the circuit.
+    """
+
+    return myqlm_circuit.to_job(job_type="SAMPLE")
+
+
+@typechecked
+def generate_sample_job(myqlm_circuit: "Circuit", job: Job) -> "JobQLM":
+    """Generates a myQLM job from the myQLM circuit and job sample info (target, shots, ...).
 
     Args:
         myqlm_circuit: MyQLM circuit of the job.
         job: Original mpqp job used to generate the myQLM job.
 
     Returns:
-        A myQLM Job and the right myQLM QPUHandler on which it will be submitted.
+        A myQLM Job for sampling the circuit according to the mpqp Job parameters.
     """
 
     assert job.measure is not None
@@ -97,57 +230,254 @@ def generate_sample_job(myqlm_circuit: Circuit, job: Job) -> tuple[JobQLM, QPUCo
         nbshots=job.measure.shots,
     )
 
-    if job.device.is_remote():
-        get_QLMaaSConnection()
-        from qlmaas.qpus import LinAlg  # type: ignore
-
-        qpu = LinAlg()
-    else:
-        assert isinstance(job.device, ATOSDevice)
-        qpu = get_local_qpu(job.device)
-
-    return myqlm_job, qpu
+    return myqlm_job
 
 
 @typechecked
-def generate_observable_job(
-    myqlm_circuit: Circuit, job: Job
-) -> tuple[JobQLM, QPUContext]:
-    """Generates a myQLM job from the myQLM circuit and observable, and selects
-    the right myQLM QPU to run on it.
+def generate_observable_job(myqlm_circuit: "Circuit", job: Job) -> "JobQLM":
+    """Generates a myQLM job from the myQLM circuit and observable.
 
     Args:
         myqlm_circuit: MyQLM circuit of the job.
-        job: Original mpqp job used to generate the myQLM job.
+        job: Original ``MPQP`` job used to generate the myQLM job.
 
     Returns:
-        A myQLM Job and the right myQLM QPUHandler on which it will be submitted.
+        A myQLM Job for retrieving the expectation value of the observable.
     """
-
     assert job.measure is not None and isinstance(job.measure, ExpectationMeasure)
-
+    qlm_obs = job.measure.observable.to_other_language(Language.MY_QLM)
     myqlm_job = myqlm_circuit.to_job(
         job_type="OBS",
-        observable=QLM_Observable(
-            job.measure.nb_qubits, matrix=job.measure.observable.matrix
-        ),
+        observable=qlm_obs,
         nbshots=job.measure.shots,
     )
-    if job.device.is_remote():
-        get_QLMaaSConnection()
-        from qlmaas.qpus import LinAlg  # type: ignore
 
-        qpu = LinAlg()
+    return myqlm_job
+
+
+@typechecked
+def generate_hardware_model(
+    noises: list[NoiseModel], nb_qubits: int
+) -> "HardwareModel":
+    """
+    Generates the QLM HardwareModel corresponding to the list of NoiseModel in parameter. The algorithm consider the
+    cases when there are gate noise, for all qubits or specific to some, and the same for idle noise.
+
+    Args:
+        noises: List of NoiseModel of a QCircuit used to generate a QLM HardwareModel.
+        nb_qubits: Number of qubits of the circuit.
+
+    Returns:
+        The HardwareModel corresponding to the combination of NoiseModels given in parameter.
+    """
+    from qat.hardware.default import DefaultGatesSpecification, HardwareModel
+    from qat.quops import (
+        make_depolarizing_channel,  # pyright: ignore[reportAttributeAccessIssue]
+    )
+
+    all_qubits_target = True
+
+    gate_noise_global = dict()
+    gate_noise_local = dict()
+    idle_lambda_global = []
+    idle_lambda_local = dict()
+
+    # For each noise model
+    for noise in noises:
+        if not isinstance(noise, Depolarizing):
+            raise NotImplementedError("So far, only depolarizing noise is supported.")
+        this_noise_all_qubits_target = True
+
+        if CRk in noise.gates:
+            noise.gates.remove(CRk)
+            if CNOT not in noise.gates:
+                noise.gates.append(CNOT)
+            noises.append(
+                Depolarizing(noise.proba, noise.targets, dimension=1, gates=[Rk])
+            )
+            warnings.warn(
+                "Requested noise on CRk gate will introduce noise on CNOT and "
+                "Rk (PH) due to its decomposition in my_QLM",
+                AdditionalGateNoiseWarning,
+            )
+
+        channel = noise.to_other_language(Language.MY_QLM)
+
+        if noise.targets != list(range(nb_qubits)):
+            this_noise_all_qubits_target = False
+            all_qubits_target = False
+
+        if noise.gates:
+            # For each gate attached to this NoiseModel, we add to each gate key the right channels
+            for gate in noise.gates:
+                if hasattr(gate, "qlm_aqasm_keyword"):
+                    gate_keyword = (
+                        gate.qlm_aqasm_keyword  # pyright: ignore[reportAttributeAccessIssue]
+                    )
+
+                    # If the target are all qubits
+                    if this_noise_all_qubits_target:
+                        if gate_keyword not in gate_noise_global:
+                            gate_noise_global[gate_keyword] = channel
+                        else:
+                            gate_noise_global[gate_keyword] *= channel
+
+                    else:
+                        if gate_keyword not in gate_noise_local:
+                            gate_noise_local[gate_keyword] = dict()
+
+                        gate_size = gate.nb_qubits
+                        assert isinstance(gate_size, int)
+                        if gate_size == 1:
+                            for target in noise.targets:
+                                if target not in gate_noise_local[gate_keyword]:
+                                    gate_noise_local[gate_keyword][target] = channel
+                                else:
+                                    gate_noise_local[gate_keyword][target] *= channel
+                        else:
+                            tuples = permutations(noise.targets, gate_size)
+                            for t in tuples:
+                                if t not in gate_noise_local[gate_keyword]:
+                                    gate_noise_local[gate_keyword][t] = channel
+                                else:
+                                    gate_noise_local[gate_keyword][t] *= channel
+                else:
+                    warnings.warn(
+                        f"The gate {gate} has no attribute 'qlm_aqasm_keyword',"
+                        " and is ignored in the definition of the noise model. "
+                        "Please add `qlm_aqasm_keyword` to the gate class as a "
+                        "class attribute.",
+                        UserWarning,
+                    )
+        # Otherwise, we add an iddle noise
+        else:
+            if this_noise_all_qubits_target:
+                idle_lambda_global.append(eval("lambda *_: c", {"c": channel}, {}))
+            else:
+                for target in noise.targets:
+                    if target not in idle_lambda_local:
+                        idle_lambda_local[target] = []
+                    idle_lambda_local[target].append(
+                        eval("lambda *_: c", {"c": channel}, {})
+                    )
+
+    if all_qubits_target:
+        gate_noise_lambdas = dict()
+
+        for gate_name in gate_noise_global:
+            gate_noise_lambdas[gate_name] = eval(
+                "lambda *_: c", {"c": gate_noise_global[gate_name]}, {}
+            )
+
+        return HardwareModel(
+            DefaultGatesSpecification(),
+            gate_noise=gate_noise_lambdas if gate_noise_lambdas else None,
+            idle_noise=idle_lambda_global if idle_lambda_global else None,
+        )
+
     else:
-        assert isinstance(job.device, ATOSDevice)
-        qpu = ObservableSplitter() | get_local_qpu(job.device)
 
-    return myqlm_job, qpu
+        for gate_name in gate_noise_global:
+            if gate_name in gate_noise_local:
+                example_elem = list(gate_noise_local[gate_name])[0]
+                if isinstance(example_elem, int):
+                    for qubit in range(nb_qubits):
+                        if qubit in gate_noise_local[gate_name]:
+                            gate_noise_local[gate_name][qubit] *= gate_noise_global[
+                                gate_name
+                            ]
+                        else:
+                            gate_noise_local[gate_name][qubit] = gate_noise_global[
+                                gate_name
+                            ]
+                else:
+                    gate_nb_qubits = len(example_elem)
+                    for t in permutations(list(range(nb_qubits)), gate_nb_qubits):
+                        if t in gate_noise_local[gate_name]:
+                            gate_noise_local[gate_name][t] *= gate_noise_global[
+                                gate_name
+                            ]
+                        else:
+                            gate_noise_local[gate_name][t] = gate_noise_global[
+                                gate_name
+                            ]
+
+            else:
+                gate_noise_local[gate_name] = gate_noise_global[gate_name]
+
+        gate_noise_lambdas = dict()
+        for gate_name in gate_noise_local:
+            if isinstance(gate_noise_local[gate_name], dict):
+                gate_noise_lambdas[gate_name] = dict()
+                example_elem = list(gate_noise_local[gate_name])[0]
+                if isinstance(example_elem, int):
+                    for qubit in range(nb_qubits):
+                        if qubit in gate_noise_local[gate_name]:
+                            gate_noise_lambdas[gate_name][qubit] = eval(
+                                "lambda *_: c",
+                                {"c": gate_noise_local[gate_name][qubit]},
+                                {},
+                            )
+                        else:
+                            # Identity channel, because it is required that every qubit is filled with a lambda
+                            gate_noise_lambdas[gate_name][qubit] = eval(
+                                "lambda *_: c",
+                                {"c": make_depolarizing_channel(prob=0.0)},
+                                {},
+                            )
+                else:
+                    gate_nb_qubits = len(example_elem)
+                    for t in permutations(list(range(nb_qubits)), gate_nb_qubits):
+                        if t in gate_noise_local[gate_name]:
+                            gate_noise_lambdas[gate_name][t] = eval(
+                                "lambda *_: c",
+                                {"c": gate_noise_local[gate_name][t]},
+                                {},
+                            )
+                        else:
+                            gate_noise_lambdas[gate_name][t] = eval(
+                                "lambda *_: c",
+                                {
+                                    "c": make_depolarizing_channel(
+                                        prob=0.0, nqbits=gate_nb_qubits
+                                    )
+                                },
+                                {},
+                            )
+
+            else:
+                gate_noise_lambdas[gate_name] = eval(
+                    "lambda *_: c", {"c": gate_noise_local[gate_name]}, {}
+                )
+
+        if idle_lambda_global or idle_lambda_local:
+
+            for qubit in range(nb_qubits):
+                if qubit in idle_lambda_local and len(idle_lambda_global) != 0:
+                    idle_lambda_local[qubit].extend(idle_lambda_global)
+                else:
+                    if len(idle_lambda_global) != 0:
+                        idle_lambda_local[qubit] = idle_lambda_global
+                    else:
+                        # Identity channel, because it is required that every qubit is filled with a list of lambda
+                        idle_lambda_local[qubit] = [
+                            eval(
+                                "lambda *_: c",
+                                {"c": make_depolarizing_channel(prob=0.0)},
+                                {},
+                            )
+                        ]
+
+        return HardwareModel(
+            DefaultGatesSpecification(),
+            gate_noise=gate_noise_lambdas if gate_noise_lambdas else None,
+            idle_noise=idle_lambda_local if idle_lambda_local else None,
+        )
 
 
 @typechecked
 def extract_state_vector_result(
-    myqlm_result: QLM_Result,
+    myqlm_result: "QLM_Result",
     job: Optional[Job] = None,
     device: ATOSDevice = ATOSDevice.MYQLM_PYLINALG,
 ) -> Result:
@@ -156,7 +486,7 @@ def extract_state_vector_result(
 
     Args:
         myqlm_result: Result returned by myQLM/QLM after running of the job.
-        job: Original mpqp job used to generate the run. Used to retrieve more
+        job: Original ``MPQP`` job used to generate the run. Used to retrieve more
             easily info to instantiate the result.
         device: ATOSDevice on which the job was submitted. Used to know if the
             run was remote or local.
@@ -187,7 +517,7 @@ def extract_state_vector_result(
 
 @typechecked
 def extract_sample_result(
-    myqlm_result: QLM_Result,
+    myqlm_result: "QLM_Result",
     job: Optional[Job] = None,
     device: ATOSDevice = ATOSDevice.MYQLM_PYLINALG,
 ) -> Result:
@@ -196,7 +526,7 @@ def extract_sample_result(
 
     Args:
         myqlm_result: Result returned by myQLM/QLM after running of the job.
-        job: Original mpqp job used to generate the run. Used to retrieve more
+        job: Original ``MPQP`` job used to generate the run. Used to retrieve more
             easily info to instantiate the result.
         device: ATOSDevice on which the job was submitted. Used to know if the
             run was remote or local.
@@ -242,7 +572,7 @@ def extract_sample_result(
 
 @typechecked
 def extract_observable_result(
-    myqlm_result: QLM_Result,
+    myqlm_result: "QLM_Result",
     job: Optional[Job] = None,
     device: ATOSDevice = ATOSDevice.MYQLM_PYLINALG,
 ) -> Result:
@@ -251,7 +581,7 @@ def extract_observable_result(
 
     Args:
         myqlm_result: Result returned by myQLM/QLM after running of the job.
-        job: Original mpqp job used to generate the run. Used to retrieve more
+        job: Original ``MPQP`` job used to generate the run. Used to retrieve more
             easily info to instantiate the result.
         device: ATOSDevice on which the job was submitted. Used to know if the
             run was remote or local.
@@ -283,12 +613,13 @@ def extract_observable_result(
             raise NotImplementedError("We cannot handle job without measure for now")
         nb_shots = job.measure.shots
 
-    return Result(job, myqlm_result.value, myqlm_result.error, nb_shots)
+    error = None if myqlm_result.error is None else abs(myqlm_result.error)
+    return Result(job, myqlm_result.value, error, nb_shots)
 
 
 @typechecked
 def extract_result(
-    myqlm_result: QLM_Result,
+    myqlm_result: "QLM_Result",
     job: Optional[Job] = None,
     device: ATOSDevice = ATOSDevice.MYQLM_PYLINALG,
 ) -> Result:
@@ -296,7 +627,7 @@ def extract_result(
 
     Args:
         myqlm_result: Result returned by myQLM/QLM after running of the job.
-        job: Original mpqp job used to generate the run. Used to retrieve more
+        job: Original ``MPQP`` job used to generate the run. Used to retrieve more
             easily info to instantiate the result.
         device: ATOSDevice on which the job was submitted. Used to know if the
             run was remote or local.
@@ -304,7 +635,6 @@ def extract_result(
     Returns:
         A Result containing the result info extracted from the myQLM/QLM result.
     """
-
     if (job is None) or job.device.is_remote():
         if myqlm_result.value is None:
             if list(myqlm_result)[0].amplitude is None:
@@ -325,47 +655,19 @@ def extract_result(
 
 
 @typechecked
-def job_pre_processing(job: Job) -> Circuit:
-    """Extracts the myQLM circuit and check if ``job.type`` and ``job.measure``
-    are coherent.
-
-    Args:
-        job: Mpqp job used to instantiate the myQLM circuit.
-
-    Returns:
-          The myQLM Circuit translated from the circuit of the job in parameter.
-    """
-
-    if (
-        job.job_type == JobType.STATE_VECTOR
-        and job.measure is not None
-        and not isinstance(job.measure, BasisMeasure)
-    ):
-        raise ValueError("`STATE_VECTOR` jobs require basis measure to be run")
-    if job.job_type == JobType.OBSERVABLE and not isinstance(
-        job.measure, ExpectationMeasure
-    ):
-        raise ValueError("`OBSERVABLE` jobs require `ExpectationMeasure` to be run")
-
-    myqlm_circuit = job.circuit.to_other_language(Language.MY_QLM)
-
-    return myqlm_circuit
-
-
-@typechecked
 def run_atos(job: Job) -> Result:
     """Executes the job on the right ATOS device precised in the job in
     parameter.
-
-    Note:
-        This function is not meant to be used directly, please use
-        ``runner.run(...)`` instead.
 
     Args:
         job: Job to be executed.
 
     Returns:
         A Result after submission and execution of the job.
+
+    Note:
+        This function is not meant to be used directly, please use
+        :func:``run<mpqp.execution.runner.run>`` instead.
     """
     return run_myQLM(job) if not job.device.is_remote() else run_QLM(job)
 
@@ -374,15 +676,15 @@ def run_atos(job: Job) -> Result:
 def run_myQLM(job: Job) -> Result:
     """Executes the job on the local myQLM simulator.
 
-    Note:
-        This function is not meant to be used directly, please use
-        ``runner.run(...)`` instead.
-
     Args:
         job: Job to be executed.
 
     Returns:
         A Result after submission and execution of the job.
+
+    Note:
+        This function is not meant to be used directly, please use
+        :func:``run<mpqp.execution.runner.run>`` instead.
     """
 
     result = None
@@ -392,13 +694,20 @@ def run_myQLM(job: Job) -> Result:
 
     myqlm_circuit = job_pre_processing(job)
 
+    assert isinstance(job.device, ATOSDevice)
+    qpu = get_local_qpu(job.device)
+    if job.job_type == JobType.OBSERVABLE:
+        from qat.plugins.observable_splitter import ObservableSplitter
+
+        qpu = ObservableSplitter() | qpu
+
     if job.job_type == JobType.STATE_VECTOR:
-        myqlm_job, qpu = generate_state_vector_job(myqlm_circuit)
+        myqlm_job = generate_state_vector_job(myqlm_circuit)
 
     elif job.job_type == JobType.SAMPLE:
         assert isinstance(job.measure, BasisMeasure)
         if isinstance(job.measure.basis, ComputationalBasis):
-            myqlm_job, qpu = generate_sample_job(myqlm_circuit, job)
+            myqlm_job = generate_sample_job(myqlm_circuit, job)
         else:
             raise NotImplementedError(
                 "Does not handle other basis than the ComputationalBasis for the moment"
@@ -406,7 +715,7 @@ def run_myQLM(job: Job) -> Result:
 
     elif job.job_type == JobType.OBSERVABLE:
         assert isinstance(job.measure, ExpectationMeasure)
-        myqlm_job, qpu = generate_observable_job(myqlm_circuit, job)
+        myqlm_job = generate_observable_job(myqlm_circuit, job)
 
     else:
         raise ValueError(f"Job type {job.job_type} not handled")
@@ -422,18 +731,22 @@ def run_myQLM(job: Job) -> Result:
 
 
 @typechecked
-def submit_QLM(job: Job) -> tuple[str, AsyncResult]:
+def submit_QLM(job: Job) -> tuple[str, "AsyncResult"]:
     """Submits the job on the remote QLM machine.
-
-    Note:
-        This function is not meant to be used directly, please use
-        ``runner.submit(...)`` instead.
 
     Args:
         job: Job to be executed.
 
     Returns:
         The job_id and the AsyncResult of the submitted job.
+
+    Raises:
+        ValueError: When job of type different from `STATE_VECTOR`, `OBSERVABLE` or `SAMPLE`
+        NotImplementedError: If the basis given is not the ComputationalBasis
+
+    Note:
+        This function is not meant to be used directly, please use
+        :func:``run<mpqp.execution.runner.run>`` instead.
     """
 
     myqlm_job = None
@@ -441,54 +754,59 @@ def submit_QLM(job: Job) -> tuple[str, AsyncResult]:
 
     myqlm_circuit = job_pre_processing(job)
 
-    if job.device == ATOSDevice.QLM_LINALG:
-        if job.job_type == JobType.STATE_VECTOR:
-            assert isinstance(job.device, ATOSDevice)
-            myqlm_job, qpu = generate_state_vector_job(myqlm_circuit, job.device)
+    assert isinstance(job.device, ATOSDevice)
+    qpu = get_remote_qpu(job.device, job)
 
-        elif job.job_type == JobType.SAMPLE:
-            assert isinstance(job.measure, BasisMeasure)
-            if isinstance(job.measure.basis, ComputationalBasis):
-                myqlm_job, qpu = generate_sample_job(myqlm_circuit, job)
-            else:
-                raise NotImplementedError(
-                    "Does not handle other basis than the ComputationalBasis for the moment"
-                )
+    if job.job_type == JobType.STATE_VECTOR:
+        assert isinstance(job.device, ATOSDevice)
+        myqlm_job = generate_state_vector_job(myqlm_circuit)
 
-        elif job.job_type == JobType.OBSERVABLE:
-            assert isinstance(job.measure, ExpectationMeasure)
-            myqlm_job, qpu = generate_observable_job(myqlm_circuit, job)
-
+    elif job.job_type == JobType.SAMPLE:
+        assert isinstance(job.measure, BasisMeasure)
+        if isinstance(job.measure.basis, ComputationalBasis):
+            myqlm_job = generate_sample_job(myqlm_circuit, job)
         else:
-            raise ValueError(f"Job type {job.job_type} not handled")
+            raise NotImplementedError(
+                "Does not handle other basis than the ComputationalBasis for the moment"
+            )
 
-        job.status = JobStatus.RUNNING
-        async_result = qpu.submit(myqlm_job)
-        job_id = async_result.get_info().id
-        job.id = job_id
+    elif job.job_type == JobType.OBSERVABLE:
+        assert isinstance(job.measure, ExpectationMeasure)
+        myqlm_job = generate_observable_job(myqlm_circuit, job)
+
     else:
-        raise NotImplementedError(f"Device {job.device} not handled")
+        raise ValueError(f"Job type {job.job_type} not handled")
+
+    job.status = JobStatus.RUNNING
+    async_result = qpu.submit(myqlm_job)
+    job_id = async_result.get_info().id
+    job.id = job_id
 
     return job_id, async_result
 
 
 @typechecked
 def run_QLM(job: Job) -> Result:
-    """Submits the job on the remote QLM machine and waits for it to be done. This
-    function is not meant to be used directly, please use ``runner.run(...)``
-    instead.
+    """Submits the job on the remote QLM machine and waits for it to be done.
 
     Args:
         job: Job to be executed.
 
     Returns:
         A Result after submission and execution of the job.
+
+    Raises:
+        ValueError: If the device is not a remote QLM device of the enum ATOSDevice.
+
+    Note:
+        This function is not meant to be used directly, please use
+        :func:``run<mpqp.execution.runner.run>`` instead.
     """
 
     if not isinstance(job.device, ATOSDevice) or not job.device.is_remote():
         raise ValueError(
-            "The job given is not a QLM one, so it cannot be handled by this "
-            "function."
+            "This job's device is not a QLM one, so it cannot be handled by this "
+            "function. Use ``run`` instead."
         )
 
     _, async_result = submit_QLM(job)
@@ -499,17 +817,25 @@ def run_QLM(job: Job) -> Result:
 
 @typechecked
 def get_result_from_qlm_job_id(job_id: str) -> Result:
-    """Retrieve the result, described by the job_id in parameter, from the
-    remote QLM and convert it into an mpqp result. If the job is still running,
-    we wait (blocking) until it is DONE.
+    """Retrieves the ``QLM`` result, described by the job_id in parameter, from
+    the remote ``QLM`` and converts it in a ``MPQP``
+    :class:`Result<mpqp.execution.result.Result>`. If the job is still running,
+    we wait (blocking) until its status becomes ``DONE``.
 
     Args:
         job_id: Id of the remote QLM job.
 
-    Raises:
-        QLMRemoteExecutionError
+    Returns:
+        The converted result.
 
+    Raises:
+        QLMRemoteExecutionError: When the job cannot be found.
+        QLMRemoteExecutionError: When the job has a non-accessible status
+            (cancelled, deleted, ...).
     """
+    from qat.comm.qlmaas.ttypes import JobStatus as QLM_JobStatus
+    from qat.comm.qlmaas.ttypes import QLMServiceException
+
     connection = get_QLMaaSConnection()
 
     try:
@@ -531,6 +857,8 @@ def get_result_from_qlm_job_id(job_id: str) -> Result:
     elif status in [QLM_JobStatus.WAITING, QLM_JobStatus.RUNNING]:
         qlm_job.join()
 
-    qlm_result: QLM_Result = qlm_job.get_result()
+    qlm_result: "QLM_Result" = qlm_job.get_result()
 
-    return extract_result(qlm_result, None, ATOSDevice.QLM_LINALG)
+    qlm_qpu_name = qlm_job.get_info().resources.qpu.split(":")[1]
+
+    return extract_result(qlm_result, None, ATOSDevice.from_str_remote(qlm_qpu_name))

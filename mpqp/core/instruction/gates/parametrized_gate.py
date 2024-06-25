@@ -11,9 +11,11 @@ from __future__ import annotations
 from abc import ABC
 from copy import deepcopy
 from numbers import Complex
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from sympy import Expr, symbols  # pyright: ignore [reportUnusedImport]
+if TYPE_CHECKING:
+    from sympy import Expr
+
 from typeguard import typechecked
 
 from mpqp.core.instruction.gates.gate import Gate
@@ -29,7 +31,8 @@ from mpqp.core.instruction.gates.gate_definition import GateDefinition
 
 @typechecked
 class ParametrizedGate(Gate, ABC):
-    """Define a parametrized gate.
+    """Abstract class to factorize behavior of parametrized gate. Since it's an
+    abstract class, do not instantiate one yourself.
 
     Args:
         definition: Provide a definition of the gate (matrix, gate combination,
@@ -39,11 +42,6 @@ class ParametrizedGate(Gate, ABC):
         parameters: List of parameters used to define the gate.
         label: Label used to identify the measurement.
 
-    Example:
-        >>> theta = np.pi/3
-        >>> c, s = np.cos(theta / 2), np.sin(theta / 2)
-        >>> gate_def = UnitaryMatrix(np.array([[c, s], [-s, c]]))
-        >>> parametrized = ParametrizedGate(gate_def, 3, theta)
     """
 
     def __init__(
@@ -63,6 +61,8 @@ class ParametrizedGate(Gate, ABC):
     def subs(
         self, values: dict[Expr | str, Complex], remove_symbolic: bool = False
     ) -> ParametrizedGate:
+        from sympy import Expr
+
         concrete_gate = deepcopy(self)
         options = getattr(self, "native_gate_options", {})
         concrete_gate.definition = concrete_gate.definition.subs(
@@ -76,3 +76,6 @@ class ParametrizedGate(Gate, ABC):
         concrete_gate._numeric_parameters = True
 
         return concrete_gate
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.parameters},{self.targets})"

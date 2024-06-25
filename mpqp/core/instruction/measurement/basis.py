@@ -18,6 +18,7 @@ import numpy as np
 import numpy.typing as npt
 from typeguard import typechecked
 
+from mpqp.tools.generics import clean_array
 from mpqp.tools.maths import atol, matrix_eq
 
 
@@ -34,9 +35,10 @@ class Basis:
     Example:
         >>> Basis([np.array([1,0]), np.array([0,-1])]).pretty_print()
         Basis: [
-            [1 0],
-            [ 0 -1]
+            [1, 0],
+            [0, -1]
         ]
+
     """
 
     def __init__(
@@ -44,11 +46,13 @@ class Basis:
         basis_vectors: list[npt.NDArray[np.complex64]],
         nb_qubits: Optional[int] = None,
     ):
-        # 3M-TODO : add the possibility to give the symbols for the '0' and '1' of the custom basis. This should then
-        #  appear in the Sample binary_representation of the basis state. For instance in the Hadamard basis, the
-        #  symbols will be '+' and '-'. If the user wants '↑' and '↓' for his custom basis, when we print samples we
-        #  would have something like:
-        #  State: ↑↑↓, Index: 1, Count: 512, Probability: 0.512
+        # TODO : add the possibility to give the symbols for the '0' and '1' of
+        # the custom basis. This should then appear in the Sample
+        # binary_representation of the basis state. For instance in the Hadamard
+        # basis, the symbols will be '+' and '-'. If the user wants '↑' and '↓'
+        # for his custom basis, when we print samples we would have something
+        # like:
+        # State: ↑↑↓, Index: 1, Count: 512, Probability: 0.512
         if len(basis_vectors) == 0:
             self.nb_qubits = nb_qubits
             self.basis_vectors = basis_vectors
@@ -87,11 +91,12 @@ class Basis:
         Example:
             >>> Basis([np.array([1,0]), np.array([0,-1])]).pretty_print()
             Basis: [
-                [ 1  0],
-                [ 0 -1]
+                [1, 0],
+                [0, -1]
             ]
+
         """
-        joint_vectors = ",\n    ".join(map(str, np.round(self.basis_vectors, 2)))
+        joint_vectors = ",\n    ".join(map(clean_array, self.basis_vectors))
         print(f"Basis: [\n    {joint_vectors}\n]")
 
     def __repr__(self) -> str:
@@ -104,6 +109,7 @@ class VariableSizeBasis(Basis):
 
     @abstractmethod
     def __init__(self, nb_qubits: Optional[int] = None):
+        super().__init__([], nb_qubits)
         pass
 
     @abstractmethod
@@ -135,24 +141,25 @@ class ComputationalBasis(VariableSizeBasis):
     Examples:
         >>> ComputationalBasis(3).pretty_print()
         Basis: [
-            [1.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j],
-            [0.+0.j 1.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j],
-            [0.+0.j 0.+0.j 1.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j],
-            [0.+0.j 0.+0.j 0.+0.j 1.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j],
-            [0.+0.j 0.+0.j 0.+0.j 0.+0.j 1.+0.j 0.+0.j 0.+0.j 0.+0.j],
-            [0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 1.+0.j 0.+0.j 0.+0.j],
-            [0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 1.+0.j 0.+0.j],
-            [0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 0.+0.j 1.+0.j]
+            [1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1]
         ]
         >>> b = ComputationalBasis()
         >>> b.set_size(2)
         >>> b.pretty_print()
         Basis: [
-            [1.+0.j 0.+0.j 0.+0.j 0.+0.j],
-            [0.+0.j 1.+0.j 0.+0.j 0.+0.j],
-            [0.+0.j 0.+0.j 1.+0.j 0.+0.j],
-            [0.+0.j 0.+0.j 0.+0.j 1.+0.j]
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
         ]
+
     """
 
     def __init__(self, nb_qubits: Optional[int] = None):
@@ -178,11 +185,12 @@ class HadamardBasis(VariableSizeBasis):
     Example:
         >>> HadamardBasis(2).pretty_print()
         Basis: [
-            [0.5+0.j 0.5+0.j 0.5+0.j 0.5+0.j],
-            [ 0.5+0.j -0.5+0.j  0.5+0.j -0.5+0.j],
-            [ 0.5+0.j  0.5+0.j -0.5+0.j -0.5+0.j],
-            [ 0.5+0.j -0.5+0.j -0.5+0.j  0.5-0.j]
+            [0.5, 0.5, 0.5, 0.5],
+            [0.5, -0.5, 0.5, -0.5],
+            [0.5, 0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5, 0.5]
         ]
+
     """
 
     def __init__(self, nb_qubits: Optional[int] = None):

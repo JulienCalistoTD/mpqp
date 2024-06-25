@@ -2,6 +2,7 @@ Measurements
 ============
 
 .. code-block:: python
+    :class: import
 
     from mpqp.measures import *
 
@@ -43,3 +44,7 @@ Measuring using an observable
 
 .. automodule:: mpqp.core.instruction.measurement.expectation_value
 
+Pauli String
+^^^^^^^^^^^^
+
+.. automodule:: mpqp.core.instruction.measurement.pauli_string
