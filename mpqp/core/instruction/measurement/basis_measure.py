@@ -71,6 +71,8 @@ class BasisMeasure(Measure):
         self.basis = basis
         """See parameter description."""
 
+        self._uml: Basis
+        
     def to_other_language(
         self,
         language: Language = Language.QISKIT,

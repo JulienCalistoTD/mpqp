@@ -243,6 +243,10 @@ class Result:
         """See parameter description."""
         self._data = data
 
+
+        self._uml: StateVector
+        self._uml2: Sample
+
         # depending on the type of job, fills the result info from the data in parameter
         if job.job_type == JobType.OBSERVABLE:
             if not isinstance(data, float):
@@ -509,6 +513,8 @@ class BatchResult:
     def __init__(self, results: list[Result]):
         self.results = results
         """See parameter description."""
+
+        self._uml: Result
 
     def __str__(self):
         header = f"BatchResult: {len(self.results)} results\n"

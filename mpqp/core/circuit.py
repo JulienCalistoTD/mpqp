@@ -131,6 +131,9 @@ class QCircuit:
         self.nb_qubits: int
         """Number of qubits of the circuit."""
 
+        self._uml: Instruction
+        self._uml2: NoiseModel
+
         if isinstance(data, int):
             if data < 0:
                 raise TypeCheckError(
