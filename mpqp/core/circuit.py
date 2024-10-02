@@ -1216,3 +1216,343 @@ class QCircuit:
     def breakpoints(self) -> list[Breakpoint]:
         """Returns the breakpoints of the circuit in order."""
         return [inst for inst in self.instructions if isinstance(inst, Breakpoint)]
+
+    # =================================================================================================
+
+    def Id(self, target: int):
+        """One qubit identity gate.
+
+        Args:
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(Id(0).to_matrix())
+            [[1, 0],
+            [0, 1]]
+
+        """
+        self.add(Id(target))
+        return self
+
+    def X(self, target: int):
+        """One qubit X (NOT) Pauli gate.
+
+        Args:
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(X(0).to_matrix())
+            [[0, 1],
+            [1, 0]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import X
+
+        self.add(X(target))
+        return self
+
+    def Y(self, target: int):
+        """One qubit Y Pauli gate.
+
+        Args:
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(Y(0).to_matrix())
+            [[0, -1j],
+            [1j, 0]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import Y
+
+        self.add(Y(target))
+        return self
+
+    def Z(self, target: int):
+        """One qubit Z Pauli gate.
+
+        Args:
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(Z(0).to_matrix())
+            [[1, 0],
+            [0, -1]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import Z
+
+        self.add(Z(target))
+        return self
+
+    def H(self, target: int):
+        """One qubit Hadamard gate.
+
+        Args:
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(H(0).to_matrix())
+            [[0.7071068, 0.7071068],
+            [0.7071068, -0.7071068]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import H
+
+        self.add(H(target))
+        return self
+
+    def P(self, theta: Expr | float, target: int):
+        """One qubit parametrized Phase gate. Consist in a rotation around Z axis.
+
+        Args:
+            theta: Parameter representing the phase to apply.
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(P(np.pi/3, 1).to_matrix())
+            [[1, 0],
+            [0, 0.5+0.8660254j]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import P
+
+        self.add(P(theta, target))
+        return self
+
+    def S(self, target: int):
+        """One qubit S gate. It's equivalent to ``P(pi/2)``.
+        It can also be defined as the square-root of the Z (Pauli) gate.
+
+        Args:
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(S(0).to_matrix())
+            [[1, 0],
+            [0, 1j]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import S
+
+        self.add(S(target))
+        return self
+
+    def T(self, target: int):
+        r"""One qubit T gate. It is also referred to as the `\pi/4` gate because it
+        consists in applying the phase gate with a phase of `\pi/4`.
+
+        The T gate can also be defined as the fourth-root of the Z (Pauli) gate.
+
+        Args:
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(T(0).to_matrix())
+            [[1, 0],
+            [0, 0.7071068+0.7071068j]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import T
+
+        self.add(T(target))
+        return self
+
+    def SWAP(self, a: int, b: int):
+        """Two-qubit SWAP gate.
+
+        Args:
+            a: First target of the swapping operation.
+            b: Second target of the swapping operation.
+
+        Example:
+            >>> pprint(SWAP(0, 1).to_matrix())
+            [[1, 0, 0, 0],
+            [0, 0, 1, 0],
+            [0, 1, 0, 0],
+            [0, 0, 0, 1]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import SWAP
+
+        self.add(SWAP(a, b))
+        return self
+
+    def U(
+        self,
+        theta: Expr | float,
+        phi: Expr | float,
+        gamma: Expr | float,
+        target: int,
+    ):
+        """Generic one qubit unitary gate. It is parametrized by 3 Euler angles.
+
+        Args:
+            theta: Parameter representing the first angle of the gate U.
+            phi: Parameter representing the second angle of the gate U.
+            gamma: Parameter representing the third angle of the gate U.
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(U(np.pi/3, 0, np.pi/4, 0).to_matrix())
+            [[0.8660254, -0.3535534-0.3535534j],
+            [0.5, 0.6123724+0.6123724j]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import U
+
+        self.add(U(theta, phi, gamma, target))
+        return self
+
+    def Rx(self, theta: Expr | float, target: int):
+        """One qubit rotation around the X axis
+
+        Args:
+            theta: Parameter representing the angle of the gate.
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(Rx(np.pi/5, 1).to_matrix())
+            [[0.9510565, -0.309017j],
+            [-0.309017j, 0.9510565]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import Rx
+
+        self.add(Rx(theta, target))
+        return self
+
+    def Ry(self, theta: Expr | float, target: int):
+        """One qubit rotation around the Y axis
+
+        Args:
+            theta: Parameter representing the angle of the gate.
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(Ry(np.pi/5, 1).to_matrix())
+            [[0.9510565, -0.309017],
+            [0.309017, 0.9510565]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import Ry
+
+        self.add(Ry(theta, target))
+        return self
+
+    def Rz(self, theta: Expr | float, target: int):
+        """One qubit rotation around the Z axis
+
+        Args:
+            theta: Parameter representing the angle of the gate.
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(Rz(np.pi/5, 1).to_matrix())
+            [[0.9510565-0.309017j, 0],
+            [0, 0.9510565+0.309017j]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import Rz
+
+        self.add(Rz(theta, target))
+        return self
+
+    def Rk(self, k: Expr | int, target: int):
+        r"""One qubit Phase gate of angle `\frac{2i\pi}{2^k}`.
+
+        Args:
+            k: Parameter used in the definition of the phase to apply.
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(Rk(5, 0).to_matrix())
+            [[1, 0],
+            [0, 0.9807853+0.1950903j]]
+
+        """
+
+    def CNOT(self, control: int, target: int):
+        """Two-qubit Controlled-NOT gate.
+
+        Args:
+            control: index referring to the qubit used to control the gate
+            target: index referring to the qubit on which the gate will be applied
+
+        Example:
+            >>> pprint(CNOT(0, 1).to_matrix())
+            [[1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 0, 1],
+            [0, 0, 1, 0]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import CNOT
+
+        self.add(CNOT(control, target))
+        return self
+
+    def CZ(self, control: int, target: int):
+        """Two-qubit Controlled-Z gate.
+
+        Args:
+            control: Index referring to the qubit used to control the gate.
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(CZ(0, 1).to_matrix())
+            [[1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, -1]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import CZ
+
+        self.add(CZ(control, target))
+        return self
+
+    def CRk(self, k: Expr | int, control: int, target: int):
+        """Two-qubit Controlled-Rk gate.
+
+        Args:
+            k: Parameter used in the definition of the phase to apply.
+            control: Index referring to the qubit used to control the gate.
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(CRk(4, 0, 1).to_matrix())
+            [[1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 0.9238795+0.3826834j]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import CRk
+
+        self.add(CRk(k, control, target))
+        return self
+
+    def TOF(self, control: list[int], target: int):
+        """Three-qubit Controlled-Controlled-NOT gate, also known as Toffoli Gate
+
+        Args:
+            control: List of indices referring to the qubits used to control the gate.
+            target: Index referring to the qubit on which the gate will be applied.
+
+        Example:
+            >>> pprint(TOF([0, 1], 2).to_matrix())
+            [[1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1],
+            [0, 0, 0, 0, 0, 0, 1, 0]]
+
+        """
+        from mpqp.core.instruction.gates.native_gates import TOF
+
+        self.add(TOF(control, target))
+        return self
